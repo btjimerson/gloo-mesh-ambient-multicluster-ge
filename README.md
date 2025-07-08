@@ -44,8 +44,8 @@ export CLUSTER1=<cluster1-context>
 export CLUSTER2=<cluster2-context>
 export CLUSTER1_NAME=cluster1
 export CLUSTER2_NAME=cluster2
-export GLOO_VERSION=2.7.2
-export ISTIO_VERSION=1.25.1
+export GLOO_VERSION=2.9.1
+export ISTIO_VERSION=1.26.2
 export GLOO_MESH_LICENSE_KEY=<gloo-mesh-license-key>
 ```
 
