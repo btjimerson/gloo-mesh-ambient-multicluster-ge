@@ -26,7 +26,6 @@ Make sure you have the following available:
 2. The `kubectl` CLI - [installation](https://kubernetes.io/docs/tasks/tools/#kubectl)
 3. The `helm` CLI - [installation](https://helm.sh/docs/intro/install/)
 4. The `meshctl` tool - [installation](https://docs.solo.io/gloo-mesh/latest/setup/prepare/cli/)
-5. Solo’s version of `istioctl` - [installation](https://support.solo.io/hc/en-us/articles/4414409064596-Istio-images-built-by-Solo-io)
 
 Add the Gloo Platform repository if necessary:
 
@@ -44,8 +43,8 @@ export CLUSTER1=<cluster1-context>
 export CLUSTER2=<cluster2-context>
 export CLUSTER1_NAME=cluster1
 export CLUSTER2_NAME=cluster2
-export GLOO_VERSION=2.7.2
-export ISTIO_VERSION=1.25.1
+export GLOO_VERSION=2.9.1
+export ISTIO_VERSION=1.26.2
 export GLOO_MESH_LICENSE_KEY=<gloo-mesh-license-key>
 ```
 
@@ -313,16 +312,7 @@ kubectl --context $CLUSTER1 label namespace command-runner istio.io/dataplane-mo
 
 ## Multi-cluster Services
 
-Expose the clusters with `istioctl`:
-
-```bash
-for context in $CLUSTER1 $CLUSTER2; do
- kubectl create namespace istio-gateways --context $context
- istioctl multicluster expose --context $context -n istio-gateways 
-done
-```
-
-Alternatively, deploy east-west gateways in both clusters:
+Deploy east-west gateways in both clusters:
     
 ```bash
 for context in $CLUSTER1 $CLUSTER2; do
@@ -387,13 +377,7 @@ for context in $CLUSTER1 $CLUSTER2; do
 done
 ```
 
-Link the clusters with `istioctl`:
-
-```bash
-istioctl multicluster link --contexts=$CLUSTER1,$CLUSTER2 -n istio-gateways
-```
-
-Alternatively get the addresses of the 2 clusters’ east-west gateways and link them with Gateways
+Get the addresses of the 2 clusters’ east-west gateways and link them with Gateways
     
 ```bash
 export CLUSTER1_EW_ADDRESS=$(kubectl get svc -n istio-gateways istio-eastwest --context $CLUSTER1 -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
@@ -460,7 +444,6 @@ spec:
       mode: Passthrough
 EOF
 ```
-    
 
 Label the product page to enable multi-cluster routing:
 
@@ -485,6 +468,14 @@ done
 
 ## Gateway Configuration
 
+Create a secret with your TLS certificate:
+
+```
+kubectl create secret tls -n istio-gateways https \
+  --key my.key \
+  --cert my.crt
+```
+
 Create a gateway for cluster 1:
 
 ```bash
@@ -497,9 +488,15 @@ metadata:
 spec:
   gatewayClassName: istio
   listeners:
-  - name: http-80
-    port: 80
-    protocol: HTTP
+  - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: https.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: https
+            kind: Secret
     allowedRoutes:
       namespaces:
         from: All
@@ -571,7 +568,7 @@ spec:
   parentRefs:
   - name: http-gateway
     namespace: istio-gateways
-    sectionName: http-80
+    sectionName: https
   rules:
   - matches:
     - path:
