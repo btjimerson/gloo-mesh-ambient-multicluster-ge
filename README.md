@@ -568,7 +568,7 @@ spec:
   parentRefs:
   - name: http-gateway
     namespace: istio-gateways
-    sectionName: http-80
+    sectionName: https
   rules:
   - matches:
     - path:
