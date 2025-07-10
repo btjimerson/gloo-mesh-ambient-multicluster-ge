@@ -252,7 +252,7 @@ Install the Gloo Istio operator:
 for context in $CLUSTER1 $CLUSTER2; do
   helm upgrade --install --kube-context $context gloo-operator \
   oci://us-docker.pkg.dev/solo-public/gloo-operator-helm/gloo-operator \
-  --version 0.2.0-beta.1 \
+  --version 0.2.5 \
   -n gloo-system \
   --create-namespace \
   --set manager.env.SOLO_ISTIO_LICENSE_KEY=$GLOO_MESH_LICENSE_KEY
