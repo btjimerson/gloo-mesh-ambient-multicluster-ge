@@ -479,6 +479,7 @@ done
 Create a secret with your TLS certificate:
 
 ```
+# Use a real cert
 kubectl create secret tls -n istio-gateways https \
   --key my.key \
   --cert my.crt
@@ -497,14 +498,14 @@ spec:
   gatewayClassName: istio
   listeners:
   - name: https
-      port: 443
-      protocol: HTTPS
-      hostname: https.example.com
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - name: https
-            kind: Secret
+    port: 443
+    protocol: HTTPS
+    hostname: https.example.com # Change this to a real host
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: https
+          kind: Secret
     allowedRoutes:
       namespaces:
         from: All
