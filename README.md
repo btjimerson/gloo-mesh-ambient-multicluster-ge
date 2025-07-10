@@ -265,6 +265,13 @@ for context in $CLUSTER1 $CLUSTER2; do
   kubectl rollout status --context $context -n gloo-system deployments/gloo-operator
 done
 ```
+Create the istio-system namespace:
+
+```bash
+for context in $CLUSTER1 $CLUSTER2; do
+  kubectl create namespace istio-system
+done
+```
 
 Create service mesh controllers to install Istio on both clusters
 
