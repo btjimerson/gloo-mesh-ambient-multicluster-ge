@@ -81,7 +81,8 @@ done
 Install the command runner application in cluster 1:
 
 ```bash
-kubectl apply --context $CLUSTER1 -f https://raw.githubusercontent.com/btjimerson/command-runner/refs/heads/main/kubernetes/command-runner.yaml
+kubectl create namespace command-runner
+kubectl apply --context $CLUSTER1 -f https://raw.githubusercontent.com/btjimerson/command-runner/refs/heads/main/manifests/command-runner.yaml
 ```
 
 # Install Gloo Management Plane
