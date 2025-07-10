@@ -81,7 +81,7 @@ done
 Install the command runner application in cluster 1:
 
 ```bash
-kubectl create namespace command-runner
+kubectl create namespace command-runner --context $CLUSTER1
 kubectl apply --context $CLUSTER1 -f https://raw.githubusercontent.com/btjimerson/command-runner/refs/heads/main/manifests/command-runner.yaml
 ```
 
