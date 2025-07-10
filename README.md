@@ -605,7 +605,7 @@ EOF
 Open the product page. Check the cluster name in the reviews to verify that traffic is routed across clusters:
 
 ```bash
-open $(echo http://$GATEWAY_ADDRESS/productpage)
+open $(echo https://$GATEWAY_ADDRESS/productpage)
 ```
 
 Scale the product page in cluster 1 to 0 replicas:
@@ -617,7 +617,7 @@ kubectl scale --context $CLUSTER1 -n bookinfo --replicas=0 deployments/productpa
 Open the product page again. All traffic should be routed to cluster 2:
 
 ```bash
-open $(echo http://$GATEWAY_ADDRESS/productpage)
+open $(echo https://$GATEWAY_ADDRESS/productpage)
 ```
 
 Scale the product page in cluster 1 to 1 replica:
