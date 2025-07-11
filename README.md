@@ -407,7 +407,7 @@ metadata:
   namespace: istio-gateways
 spec:
   addresses:
-  - type: IPAddress
+  - type: Hostname # Change this to IPAddress on gcloud and azure
     value: $CLUSTER2_EW_ADDRESS
   gatewayClassName: istio-remote
   listeners:
@@ -436,7 +436,7 @@ metadata:
   namespace: istio-gateways
 spec:
   addresses:
-  - type: IPAddress
+  - type: Hostname # Change this to IPAddress on gcloud and azure
     value: $CLUSTER1_EW_ADDRESS
   gatewayClassName: istio-remote
   listeners:
