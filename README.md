@@ -476,15 +476,6 @@ done
 
 ## Gateway Configuration
 
-Create a secret with your TLS certificate:
-
-```
-# Use a real cert
-kubectl create secret tls -n istio-gateways https \
-  --key my.key \
-  --cert my.crt
-```
-
 Create a gateway for cluster 1:
 
 ```bash
@@ -497,15 +488,9 @@ metadata:
 spec:
   gatewayClassName: istio
   listeners:
-  - name: https
-    port: 443
-    protocol: HTTPS
-    hostname: https.example.com # Change this to a real host
-    tls:
-      mode: Terminate
-      certificateRefs:
-        - name: https
-          kind: Secret
+  - name: http-80
+    port: 80
+    protocol: HTTP
     allowedRoutes:
       namespaces:
         from: All
