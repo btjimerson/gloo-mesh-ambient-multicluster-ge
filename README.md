@@ -116,6 +116,13 @@ glooMgmtServer:
   registerCluster: true
   policyApis:
     enabled: true
+  serviceOverrides:
+    metadata:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: external
+        service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+        service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+        service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
 glooInsightsEngine:
   enabled: true
 glooUi:
@@ -131,6 +138,12 @@ telemetryCollector:
   replicaCount: 1
 telemetryGateway:
   enabled: true
+  service:
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+      service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
 installEnterpriseCrds: false
 featureGates:
   ConfigDistribution: true
@@ -192,15 +205,26 @@ helm upgrade --install gloo-platform gloo-platform/gloo-platform \
   --kube-context $CLUSTER2 \
   -n gloo-mesh \
   --version $GLOO_VERSION \
-  --set common.cluster=$CLUSTER2_NAME \
-  --set glooAgent.enabled=true \
-  --set glooAgent.authority=gloo-meshmgmt-server.gloo-mesh \
-  --set glooAgent.relay.serverAddress=$MANAGEMENT_SERVER_ADDRESS \
-  --set glooAnalyzer.enabled=true \
-  --set installEnterpriseCrds=false \
-  --set telemetryCollector.enabled=true \
-  --set telemetryCollector.config.exporters.otlp.endpoint=$TELEMETRY_GATEWAY_ADDRESS \
-  --set telemetryCollectorCustomization.skipVerify=true
+  -f- <<EOF
+common:
+  cluster: $CLUSTER2_NAME
+glooAgent:
+  enabled: true
+  authority: gloo-meshmgmt-server.gloo-mesh
+  relay:
+    serverAddress: $MANAGEMENT_SERVER_ADDRESS
+glooAnalyzer:
+  enabled: true
+installEnterpriseCrds: false
+telemetryCollector:
+  enabled: true
+  config:
+    exporters:
+      otlp:
+        endpoint: $TELEMETRY_GATEWAY_ADDRESS
+telemetryCollectorCustomization:
+  skipVerify: true
+EOF
 ```
 
 Wait for the agent to start properly:
@@ -334,6 +358,11 @@ metadata:
   labels:
     istio.io/expose-istiod: "15012"
     topology.istio.io/network: $CLUSTER1_NAME
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+    service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
   name: istio-eastwest
   namespace: istio-gateways
 spec:
@@ -358,6 +387,11 @@ metadata:
   labels:
     istio.io/expose-istiod: "15012"
     topology.istio.io/network: $CLUSTER2_NAME
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+    service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
   name: istio-eastwest
   namespace: istio-gateways
 spec:
@@ -462,18 +496,6 @@ for context in $CLUSTER1 $CLUSTER2; do
 done
 ```
 
-Get the service entry and workload entry created for the global product page:
-
-```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  echo "Service entries and workload entries for cluster $context:"
-  echo ""
-  kubectl get serviceentry --context $context -n istio-system
-  kubectl get workloadentry --context $context -n istio-system
-  echo ""
-done
-```
-
 ## Gateway Configuration
 
 Create a gateway for cluster 1:
@@ -485,6 +507,8 @@ kind: Gateway
 metadata:
   name: http-gateway
   namespace: istio-gateways
+  annotations:
+    networking.istio.io/service-type: NodePort
 spec:
   gatewayClassName: istio
   listeners:
@@ -503,16 +527,42 @@ spec:
 EOF
 ```
 
-Wait for the gateway and backing service to become available:
+Create an ALB ingress object for cluster 1:
 
 ```bash
-kubectl wait gateway/http-gateway --for=condition=Programmed --context $CLUSTER1 -n istio-gateways
+kubectl apply -f- <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: istio-gateways
+  name: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: instance
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-port: "30285"
+    alb.ingress.kubernetes.io/healthcheck-path: "/healthz/ready"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: #--ARN of ACM Certificate
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: http-gateway-istio
+              port:
+                number: 80
+EOF
 ```
 
 Get the address of the gateway:
 
 ```bash
-export GATEWAY_ADDRESS=$(kubectl get svc -n istio-gateways http-gateway-istio --context $CLUSTER1 -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
+export GATEWAY_ADDRESS=$(kubectl get ingress -n istio-gateways alb --context $CLUSTER1 -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
 echo "Gateway address: $GATEWAY_ADDRESS"
 ```
 
