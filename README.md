@@ -369,13 +369,6 @@ for context in $CLUSTER1 $CLUSTER2; do
   kubectl rollout status --context $context -n gloo-system deployments/gloo-operator
 done
 ```
-Create the istio-system namespace:
-
-```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl create namespace istio-system
-done
-```
 
 Create service mesh controllers to install Istio on both clusters
 
@@ -574,11 +567,24 @@ kubectl label service --context $CLUSTER2 -n bookinfo-backend reviews solo.io/se
 
 ## Gateway Configuration
 
-Create a secret for TLS termination:
+Create a self-signed certificate and secret for securing ALB -> Gateway traffic:
 
 ```bash
-kubectl create --context $CLUSTER1 -n istio-gateways secret generic tls-secret --from-file=key=certs/key.pem --from-file=cert=certs/cert.pem
+echo "Making directory for certificates..."
+mkdir -p certs
+
+echo "Creating self-signed certificate..."
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+  -keyout certs/key.pem -out certs/cert.pem -subj "/CN=internal.ge.com"
+
+echo "Creating secret for tls certiicate..."
+kubectl create --context $CLUSTER1 -n istio-gateways secret generic gateway-tls-secret --from-file=key=certs/key.pem --from-file=cert=certs/cert.pem
+
+echo "Secret created. Removing certificates from filesystem..."
+rm -rf certs
+echo "Done..."
 ```
+
 
 Create a gateway for cluster 1:
 
@@ -594,9 +600,15 @@ metadata:
 spec:
   gatewayClassName: istio
   listeners:
-  - name: http
-    port: 80
-    protocol: HTTP
+  - name: https # Secure the incoming traffic from ALB
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        group: ""
+        name: gateway-tls-secret
     allowedRoutes:
       namespaces:
         from: All
@@ -615,8 +627,8 @@ metadata:
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: instance
-    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
-    alb.ingress.kubernetes.io/healthcheck-port: "30285"
+    alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS
     alb.ingress.kubernetes.io/healthcheck-path: "/healthz/ready"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
     alb.ingress.kubernetes.io/certificate-arn: $ACM_CERTIFICATE_ARN
@@ -633,7 +645,14 @@ spec:
             service:
               name: http-gateway-istio
               port:
-                number: 80
+                number: 443
+        - path: /healthz/ready
+          pathType: Prefix
+          backend:
+            service:
+              name: http-gateway-istio
+              port:
+                number: 15021
 EOF
 ```
 
@@ -750,24 +769,6 @@ Route all traffic to reviews v1:
 
 ```bash
 kubectl apply --context $CLUSTER2 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: HTTPRoute
-metadata:
-  name: global-reviews
-  namespace: bookinfo-backend
-spec:
-  parentRefs:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: istio-eastwest
-    namespace: istio-gateways
-  hostnames:
-  - "reviews.bookinfo-backend.mesh.internal"
-  rules:
-  - backendRefs:
-    - name: reviews.bookinfo-backend.mesh.internal
-      port: 9080
----
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -795,7 +796,6 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Clean up the route:
 
 ```bash
-kubectl delete httproute --context $CLUSTER2 -n bookinfo-backend global-reviews
 kubectl delete virtualservice --context $CLUSTER2 -n bookinfo-backend reviews-vs
 ```
 
@@ -864,24 +864,6 @@ Route traffic to v2 of reviews (which calls the ratings service):
 
 ```bash
 kubectl apply --context $CLUSTER2 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: HTTPRoute
-metadata:
-  name: global-reviews
-  namespace: bookinfo-backend
-spec:
-  parentRefs:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: istio-eastwest
-    namespace: istio-gateways
-  hostnames:
-  - "reviews.bookinfo-backend.mesh.internal"
-  rules:
-  - backendRefs:
-    - name: reviews.bookinfo-backend.mesh.internal
-      port: 9080
----
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -934,25 +916,22 @@ Update the reviews route to use a 0.5 second timeout:
 
 ```bash
 kubectl apply --context $CLUSTER2 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: HTTPRoute
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
 metadata:
-  name: global-reviews
+  name: reviews-vs
   namespace: bookinfo-backend
 spec:
-  parentRefs:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: istio-eastwest
-    namespace: istio-gateways
-  hostnames:
+  hosts:
   - "reviews.bookinfo-backend.mesh.internal"
-  rules:
-  - backendRefs:
-    - name: reviews.bookinfo-backend.mesh.internal
-      port: 9080
-    timeouts:
-      request: 500ms
+  http:
+  - route:
+    - destination:
+        host: reviews.bookinfo-backend.svc.cluster.local
+        subset: v2
+        port:
+          number: 9080
+    timeout: 0.5s
 EOF
 ```
 
@@ -965,7 +944,6 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Clean up the virtual services and routes:
 
 ```bash
-kubectl delete httproute global-reviews --context $CLUSTER2 -n bookinfo-backend
 kubectl delete virtualservice reviews-vs --context $CLUSTER2 -n bookinfo-backend
 kubectl delete virtualservice ratings-vs --context $CLUSTER2 -n bookinfo-backend
 ```
@@ -988,19 +966,19 @@ Clean up all resources:
 # all waypoints
 kubectl delete gateway waypoint --context $CLUSTER1 -n bookinfo-frontend
 kubectl delete gateway waypoint --context $CLUSTER2 -n bookinfo-backend
-kubectl delete gateway waypoint --context $CLUSTER1 -n command-runner
+kubectl delete destinationrule reviews-dr --context $CLUSTER2 -n bookinfo-backend
 
 # application routes and gateway
 kubectl delete httproute bookinfo-route --context $CLUSTER1 -n bookinfo-frontend
-kubectl delete httproute command-runner-route --context $CLUSTER1 -n command-runner
 kubectl delete gateway http-gateway --context $CLUSTER1 -n istio-gateways
+kubectl delete secret gateway-tls-secret --context $CLUSTER1 -n istio-gateways
 kubectl delete ingress alb --context $CLUSTER1 -n istio-gateways
 
 # istio gateways
 kubectl delete gateway istio-remote-peer-cluster1 --context $CLUSTER2 -n istio-gateways
 kubectl delete gateway istio-remote-peer-cluster2 --context $CLUSTER1 -n istio-gateways
-kubectl --context $CLUSTER2 -n bookinfo-backend label ratings productpage solo.io/service-scope-
-kubectl --context $CLUSTER2 -n bookinfo-backend label reviews productpage solo.io/service-scope-
+kubectl --context $CLUSTER2 -n bookinfo-backend label service ratings solo.io/service-scope-
+kubectl --context $CLUSTER2 -n bookinfo-backend label service reviews solo.io/service-scope-
 for context in $CLUSTER1 $CLUSTER2; do
   kubectl delete service istio-eastwest --context $context -n istio-gateways
   kubectl delete gateway istio-eastwest --context $context -n istio-gateways
@@ -1013,6 +991,7 @@ for context in $CLUSTER1 $CLUSTER2; do
   kubectl delete servicemeshcontroller istio --context $context
   helm uninstall gloo-operator --kube-context $context -n gloo-system
   kubectl delete namespace gloo-system --context $context
+  kubectl delete namespace istio-system --context $context
   kubectl get crds --context $context -oname | grep --color=never 'istio.io' | xargs kubectl delete --context $context --ignore-not-found
 done
 kubectl delete roottrustpolicy root-trust-policy --context $CLUSTER1 -n gloo-mesh
@@ -1022,6 +1001,7 @@ helm uninstall gloo-platform --kube-context $CLUSTER2 -n gloo-mesh
 helm uninstall gloo-platform-crds --kube-context $CLUSTER2 -n gloo-mesh
 kubectl delete secret relay-root-tls-secret --context $CLUSTER2 -n gloo-mesh
 kubectl delete secret relay-identity-token-secret --context $CLUSTER2 -n gloo-mesh
+kubectl delete namespace gloo-mesh --context $CLUSTER2
 kubectl delete kubernetescluster $CLUSTER2_NAME --context $CLUSTER1 -n gloo-mesh
 helm uninstall gloo-platform --kube-context $CLUSTER1 -n gloo-mesh
 helm uninstall gloo-platform-crds --kube-context $CLUSTER1 -n gloo-mesh
@@ -1032,11 +1012,23 @@ for context in $CLUSTER1 $CLUSTER2; do
 done
 
 # sample apps
-kubectl delete --context $CLUSTER1 -f https://raw.githubusercontent.com/btjimerson/command-runner/refs/heads/main/kubernetes/command-runner.yaml
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl --context $context delete -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo.yaml
-  kubectl --context $context delete -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo-versions.yaml
-done
+kubectl delete --context $CLUSTER1 -f https://raw.githubusercontent.com/btjimerson/command-runner/refs/heads/main/manifests/command-runner.yaml
+kubectl delete namespace command-runner --context $CLUSTER1
+kubectl delete --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=productpage
+kubectl delete --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=productpage
+kubectl delete --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=productpage
+kubectl delete --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=details
+kubectl delete --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=details
+kubectl delete --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=details
+kubectl delete --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=ratings
+kubectl delete --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=ratings
+kubectl delete --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=ratings
+kubectl delete --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=reviews
+kubectl delete --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=reviews
+kubectl delete --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=reviews
+kubectl delete service --context $CLUSTER2 -n bookinfo-backend reviews-v1
+kubectl delete service --context $CLUSTER2 -n bookinfo-backend reviews-v2
+kubectl delete service --context $CLUSTER2 -n bookinfo-backend reviews-v3
 kubectl --context $CLUSTER1 delete namespace bookinfo-frontend
 kubectl --context $CLUSTER2 delete namespace bookinfo-backend
 
