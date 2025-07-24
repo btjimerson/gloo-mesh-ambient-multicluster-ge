@@ -46,6 +46,7 @@ export CLUSTER2_NAME=cluster2
 export GLOO_VERSION=2.9.1
 export ISTIO_VERSION=1.26.2
 export GLOO_MESH_LICENSE_KEY=<gloo-mesh-license-key>
+export ACM_CERTIFICATE_ARN=<arn-of-cert>
 ```
 
 Verify they’re set properly:
@@ -573,6 +574,12 @@ kubectl label service --context $CLUSTER2 -n bookinfo-backend reviews solo.io/se
 
 ## Gateway Configuration
 
+Create a secret for TLS termination:
+
+```bash
+kubectl create --context $CLUSTER1 -n istio-gateways secret generic tls-secret --from-file=key=certs/key.pem --from-file=cert=certs/cert.pem
+```
+
 Create a gateway for cluster 1:
 
 ```bash
@@ -587,14 +594,8 @@ metadata:
 spec:
   gatewayClassName: istio
   listeners:
-  - name: http-80
+  - name: http
     port: 80
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
-  - name: http-8080
-    port: 8080
     protocol: HTTP
     allowedRoutes:
       namespaces:
@@ -618,9 +619,11 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-port: "30285"
     alb.ingress.kubernetes.io/healthcheck-path: "/healthz/ready"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
-    alb.ingress.kubernetes.io/certificate-arn: #--ARN of ACM Certificate
+    alb.ingress.kubernetes.io/certificate-arn: $ACM_CERTIFICATE_ARN
 spec:
   ingressClassName: alb
+  tls:
+  - secretName: tls-secret
   rules:
     - http:
         paths:
@@ -643,37 +646,6 @@ echo "Gateway address: $GATEWAY_ADDRESS"
 
 ## HTTP Route Configuration
 
-Create a route for the command runner application:
-
-```bash
-kubectl --context $CLUSTER1 apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: command-runner-route
-  namespace: command-runner
-spec:
-  parentRefs:
-  - name: http-gateway
-    namespace: istio-gateways
-    sectionName: http-8080
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /
-    backendRefs:
-    - name: command-runner
-      port: 8080
-EOF
-```
-
-Open the command runner application:
-
-```bash
-open $(echo http://$GATEWAY_ADDRESS:8080/)
-```
-
 Create a route for the global product page destination:
 
 ```bash
@@ -687,7 +659,6 @@ spec:
   parentRefs:
   - name: http-gateway
     namespace: istio-gateways
-    sectionName: http-80
   rules:
   - matches:
     - path:
@@ -747,23 +718,28 @@ EOF
 kubectl label namespace bookinfo-backend --context $CLUSTER2 istio.io/use-waypoint=waypoint
 ```
 
-Deploy a waypoint for the command runner namespace:
+Create a destination rule for the subsets of the reviews service
 
 ```bash
-kubectl apply --context $CLUSTER1 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
+kubectl apply --context $CLUSTER2 -f- <<EOF
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
 metadata:
-  name: waypoint
-  namespace: command-runner
+  name: reviews-dr
+  namespace: bookinfo-backend
 spec:
-  gatewayClassName: istio-waypoint
-  listeners:
-  - name: mesh
-    port: 15008
-    protocol: HBONE
+  host: reviews
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: v3
+    labels:
+      version: v3
 EOF
-kubectl label namespace command-runner --context $CLUSTER1 istio.io/use-waypoint=waypoint
 ```
 
 # Ambient Features
@@ -774,21 +750,39 @@ Route all traffic to reviews v1:
 
 ```bash
 kubectl apply --context $CLUSTER2 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1
+apiVersion: gateway.networking.k8s.io/v1beta1
 kind: HTTPRoute
 metadata:
-  name: reviews
+  name: global-reviews
   namespace: bookinfo-backend
 spec:
   parentRefs:
-  - group: ""
-    kind: Service
-    name: reviews
-    port: 9080
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: istio-eastwest
+    namespace: istio-gateways
+  hostnames:
+  - "reviews.bookinfo-backend.mesh.internal"
   rules:
   - backendRefs:
-    - name: reviews-v1
+    - name: reviews.bookinfo-backend.mesh.internal
       port: 9080
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-vs
+  namespace: bookinfo-backend
+spec:
+  hosts:
+  - "reviews.bookinfo-backend.mesh.internal"
+  http:
+  - route:
+    - destination:
+        host: reviews.bookinfo-backend.svc.cluster.local
+        subset: v1
+        port:
+          number: 9080
 EOF
 ```
 
@@ -801,7 +795,8 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Clean up the route:
 
 ```bash
-kubectl delete httproute --context $CLUSTER2 -n bookinfo-backend reviews
+kubectl delete httproute --context $CLUSTER2 -n bookinfo-backend global-reviews
+kubectl delete virtualservice --context $CLUSTER2 -n bookinfo-backend reviews-vs
 ```
 
 ## Namespace Isolation
@@ -820,6 +815,7 @@ spec:
   mtls:
     mode: STRICT
 EOF
+done
 ```
 
 Apply an authorization policy that isolates traffic to the bookinfo-backend namespace:
@@ -868,21 +864,39 @@ Route traffic to v2 of reviews (which calls the ratings service):
 
 ```bash
 kubectl apply --context $CLUSTER2 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1
+apiVersion: gateway.networking.k8s.io/v1beta1
 kind: HTTPRoute
 metadata:
-  name: reviews
+  name: global-reviews
   namespace: bookinfo-backend
 spec:
   parentRefs:
-  - group: ""
-    kind: Service
-    name: reviews
-    port: 9080
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: istio-eastwest
+    namespace: istio-gateways
+  hostnames:
+  - "reviews.bookinfo-backend.mesh.internal"
   rules:
   - backendRefs:
-    - name: reviews-v2
+    - name: reviews.bookinfo-backend.mesh.internal
       port: 9080
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-vs
+  namespace: bookinfo-backend
+spec:
+  hosts:
+  - "reviews.bookinfo-backend.mesh.internal"
+  http:
+  - route:
+    - destination:
+        host: reviews.bookinfo-backend.svc.cluster.local
+        subset: v2
+        port:
+          number: 9080
 EOF
 ```
 
@@ -893,7 +907,7 @@ kubectl apply --context $CLUSTER2 -f- <<EOF
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
-  name: ratings
+  name: ratings-vs
   namespace: bookinfo-backend
 spec:
   hosts:
@@ -920,22 +934,23 @@ Update the reviews route to use a 0.5 second timeout:
 
 ```bash
 kubectl apply --context $CLUSTER2 -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1
+apiVersion: gateway.networking.k8s.io/v1beta1
 kind: HTTPRoute
 metadata:
-  name: reviews
+  name: global-reviews
   namespace: bookinfo-backend
 spec:
   parentRefs:
-  - group: ""
-    kind: Service
-    name: reviews
-    port: 9080
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: istio-eastwest
+    namespace: istio-gateways
+  hostnames:
+  - "reviews.bookinfo-backend.mesh.internal"
   rules:
   - backendRefs:
-    - name: reviews-v2
+    - name: reviews.bookinfo-backend.mesh.internal
       port: 9080
-    # Add a 0.5 second timeout
     timeouts:
       request: 500ms
 EOF
@@ -950,8 +965,9 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Clean up the virtual services and routes:
 
 ```bash
-kubectl delete httproute reviews --context $CLUSTER2 -n bookinfo-backend
-kubectl delete virtualservice ratings --context $CLUSTER2 -n bookinfo-backend
+kubectl delete httproute global-reviews --context $CLUSTER2 -n bookinfo-backend
+kubectl delete virtualservice reviews-vs --context $CLUSTER2 -n bookinfo-backend
+kubectl delete virtualservice ratings-vs --context $CLUSTER2 -n bookinfo-backend
 ```
 
 # Observability
