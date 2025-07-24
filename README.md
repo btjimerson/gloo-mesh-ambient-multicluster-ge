@@ -63,17 +63,95 @@ echo "Istio Version: $ISTIO_VERSION"
 
 ## Bookinfo
 
-Install the bookinfo application in both clusters:
+Remove any existing book info deployments:
 
 ```bash
 for context in $CLUSTER1 $CLUSTER2; do
-  kubectl --context $context create namespace bookinfo
-  kubectl --context $context apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo.yaml
-  kubectl --context $context apply -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo-versions.yaml
-  kubectl set env -n bookinfo --context $context deployments/reviews-v1 CLUSTER_NAME=$context
-  kubectl set env -n bookinfo --context $context deployments/reviews-v2 CLUSTER_NAME=$context
-  kubectl set env -n bookinfo --context $context deployments/reviews-v3 CLUSTER_NAME=$context
+  kubectl delete --context $context -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo.yaml
+  kubectl delete --context $context -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo-versions.yaml
+  kubectl delete namespace --context $context bookinfo
 done
+```
+
+Create the bookinfo namespace in both clusters
+
+```bash
+kubectl --context $CLUSTER1 create namespace bookinfo-frontend
+kubectl --context $CLUSTER2 create namespace bookinfo-backend
+```
+
+Install the product page and details in cluster 1:
+
+```bash
+kubectl apply --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=productpage
+kubectl apply --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=productpage
+kubectl apply --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=productpage
+kubectl apply --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=details
+kubectl apply --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=details
+kubectl apply --context $CLUSTER1 -n bookinfo-frontend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=details
+```
+
+Install ratings and reviews in cluster 2:
+
+```bash
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=ratings
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=ratings
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=ratings
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l service=reviews
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l account=reviews
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f https://raw.githubusercontent.com/istio/istio/release-1.26/samples/bookinfo/platform/kube/bookinfo.yaml -l app=reviews
+kubectl set env -n bookinfo-backend --context $CLUSTER2 deployments/reviews-v1 CLUSTER_NAME=$CLUSTER2
+kubectl set env -n bookinfo-backend --context $CLUSTER2 deployments/reviews-v2 CLUSTER_NAME=$CLUSTER2
+kubectl set env -n bookinfo-backend --context $CLUSTER2 deployments/reviews-v3 CLUSTER_NAME=$CLUSTER2
+```
+
+Install the services for ratings in cluster 2:
+
+```bash
+kubectl apply --context $CLUSTER2 -n bookinfo-backend -f- <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v1
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: reviews
+    version: v1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v2
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: reviews
+    version: v2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v3
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: reviews
+    version: v3
+EOF
+```
+
+Set the hostname for ratings and reviews in productpage:
+
+```bash
+kubectl set env -n bookinfo-frontend --context $CLUSTER1 deployments/productpage-v1 REVIEWS_HOSTNAME=reviews.bookinfo-backend.mesh.internal
+kubectl set env -n bookinfo-frontend --context $CLUSTER1 deployments/productpage-v1 RATINGS_HOSTNAME=ratings.bookinfo-backend.mesh.internal
 ```
 
 ## Command Runner
@@ -335,9 +413,8 @@ done
 Join workloads to the mesh:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl --context $context label namespace bookinfo istio.io/dataplane-mode=ambient --overwrite
-done
+kubectl --context $CLUSTER1 label namespace bookinfo-frontend istio.io/dataplane-mode=ambient --overwrite
+kubectl --context $CLUSTER2 label namespace bookinfo-backend istio.io/dataplane-mode=ambient --overwrite
 
 kubectl --context $CLUSTER1 label namespace command-runner istio.io/dataplane-mode=ambient --overwrite
 ```
@@ -487,13 +564,11 @@ spec:
 EOF
 ```
 
-Label the product page to enable multi-cluster routing:
+Label the ratings and reviews to enable multi-cluster routing:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl --context $context -n bookinfo label service productpage solo.io/service-scope=global --overwrite
-  kubectl --context $context -n bookinfo annotate service productpage networking.istio.io/traffic-distribution=Any --overwrite
-done
+kubectl label service --context $CLUSTER2 -n bookinfo-backend ratings solo.io/service-scope=global --overwrite
+kubectl label service --context $CLUSTER2 -n bookinfo-backend reviews solo.io/service-scope=global --overwrite
 ```
 
 ## Gateway Configuration
@@ -607,7 +682,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: bookinfo-route
-  namespace: bookinfo
+  namespace: bookinfo-frontend
 spec:
   parentRefs:
   - name: http-gateway
@@ -616,63 +691,31 @@ spec:
   rules:
   - matches:
     - path:
-        type: Exact
-        value: /productpage
-    - path:
         type: PathPrefix
-        value: /static
-    - path:
-        type: Exact
-        value: /login
-    - path:
-        type: Exact
-        value: /logout
-    # Reference the global destination address, 
-    # not the local service
+        value: /
     backendRefs:
-    - kind: Hostname
-      group: networking.istio.io
-      name: productpage.bookinfo.mesh.internal
+    - name: productpage
       port: 9080
 EOF
 ```
 
-Open the product page. Check the cluster name in the reviews to verify that traffic is routed across clusters:
+Open the product page. Verify that traffic is routed to cluster 2 for ratings and reviews
 
 ```bash
 open $(echo https://$GATEWAY_ADDRESS/productpage)
-```
-
-Scale the product page in cluster 1 to 0 replicas:
-
-```bash
-kubectl scale --context $CLUSTER1 -n bookinfo --replicas=0 deployments/productpage-v1 
-```
-
-Open the product page again. All traffic should be routed to cluster 2:
-
-```bash
-open $(echo https://$GATEWAY_ADDRESS/productpage)
-```
-
-Scale the product page in cluster 1 to 1 replica:
-
-```bash
-kubectl scale --context $CLUSTER1 -n bookinfo --replicas=1 deployments/productpage-v1 
 ```
 
 ## Waypoint Configuration
 
-Deploy a waypoint to the `bookinfo` namespace for layer 7 controls:
+Deploy a waypoint to the `bookinfo-frontend` namespace for layer 7 controls:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
+kubectl apply --context $CLUSTER1 -f- <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: waypoint
-  namespace: bookinfo
+  namespace: bookinfo-frontend
 spec:
   gatewayClassName: istio-waypoint
   listeners:
@@ -680,8 +723,28 @@ spec:
     port: 15008
     protocol: HBONE
 EOF
-  kubectl label namespace bookinfo --context $context istio.io/use-waypoint=waypoint
-done
+
+kubectl label namespace bookinfo-frontend --context $CLUSTER1 istio.io/use-waypoint=waypoint
+```
+
+Deploy a waypoint to the `bookinfo-backend` namespace for layer 7 controls:
+
+```bash
+kubectl apply --context $CLUSTER2 -f- <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: bookinfo-backend
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+EOF
+
+kubectl label namespace bookinfo-backend --context $CLUSTER2 istio.io/use-waypoint=waypoint
 ```
 
 Deploy a waypoint for the command runner namespace:
@@ -710,13 +773,12 @@ kubectl label namespace command-runner --context $CLUSTER1 istio.io/use-waypoint
 Route all traffic to reviews v1:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
+kubectl apply --context $CLUSTER2 -f- <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reviews
-  namespace: bookinfo
+  namespace: bookinfo-backend
 spec:
   parentRefs:
   - group: ""
@@ -728,7 +790,6 @@ spec:
     - name: reviews-v1
       port: 9080
 EOF
-done
 ```
 
 Show that all traffic is served by v1 of reviews:
@@ -740,56 +801,7 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Clean up the route:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl delete httproute --context $context -n bookinfo reviews
-done
-```
-
-## Route Based on User
-
-Route traffic based on user:
-
-```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: reviews
-  namespace: bookinfo
-spec:
-  parentRefs:
-  - group: ""
-    kind: Service
-    name: reviews
-    port: 9080
-  rules:
-  - matches:
-    - headers:
-      - name: end-user
-        value: jason
-    backendRefs:
-    - name: reviews-v2
-      port: 9080
-  - backendRefs:
-    - name: reviews-v1
-      port: 9080
-EOF
-done
-```
-
-Open the product page and login in with jason / jason:
-
-```bash
-open $(echo http://$GATEWAY_ADDRESS/productpage)
-```
-
-Clean up routes:
-
-```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl delete httproute --context $context -n bookinfo reviews
-done
+kubectl delete httproute --context $CLUSTER2 -n bookinfo-backend reviews
 ```
 
 ## Namespace Isolation
@@ -808,51 +820,46 @@ spec:
   mtls:
     mode: STRICT
 EOF
-done
 ```
 
-Apply an authorization policy that isolates traffic to the bookinfo namespace:
+Apply an authorization policy that isolates traffic to the bookinfo-backend namespace:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
+kubectl apply --context $CLUSTER2 -f- <<EOF
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
   name: namespace-isolation
-  namespace: bookinfo
+  namespace: bookinfo-backend
 spec:
   action: ALLOW
   rules:
   - from:
     - source:
-        namespaces: ["bookinfo"]
+        namespaces: ["bookinfo-backend"]
   targetRefs:
   - kind: Gateway
     group: gateway.networking.k8s.io
     name: waypoint
 EOF
-done
 ```
 
 Open the command runner application and try to curl the reviews API:
 
 ```bash
-curl -ivk http://reviews.bookinfo:9080/reviews/1 
+curl -ivk http://reviews.bookinfo-backend.mesh.internal:9080/reviews/1 
 ```
 
 Remove the authorization policy:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl delete authorizationpolicy namespace-isolation --context $context -n bookinfo
-done
+kubectl delete authorizationpolicy namespace-isolation --context $CLUSTER2 -n bookinfo-backend
 ```
 
 Try to curl the reviews API again:
 
 ```bash
-curl -ik http://reviews.bookinfo:9080/reviews/1 
+curl -ik http://reviews.bookinfo-backend.mesh.internal:9080/reviews/1 
 ```
 
 ## Request Timeouts
@@ -860,13 +867,12 @@ curl -ik http://reviews.bookinfo:9080/reviews/1
 Route traffic to v2 of reviews (which calls the ratings service):
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
+kubectl apply --context $CLUSTER2 -f- <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reviews
-  namespace: bookinfo
+  namespace: bookinfo-backend
 spec:
   parentRefs:
   - group: ""
@@ -878,19 +884,17 @@ spec:
     - name: reviews-v2
       port: 9080
 EOF
-done
 ```
 
 Add a 2 second delay to the ratings service:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
+kubectl apply --context $CLUSTER2 -f- <<EOF
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
   name: ratings
-  namespace: bookinfo
+  namespace: bookinfo-backend
 spec:
   hosts:
   - ratings
@@ -904,7 +908,6 @@ spec:
     - destination:
         host: ratings
 EOF
-done
 ```
 
 Open the product page and notice the 2 second delay:
@@ -916,13 +919,12 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Update the reviews route to use a 0.5 second timeout:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-kubectl apply --context $context -f- <<EOF
+kubectl apply --context $CLUSTER2 -f- <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reviews
-  namespace: bookinfo
+  namespace: bookinfo-backend
 spec:
   parentRefs:
   - group: ""
@@ -937,7 +939,6 @@ spec:
     timeouts:
       request: 500ms
 EOF
-done
 ```
 
 Open the product page again. The reviews should be unavailable because the timeout is less than the delay:
@@ -949,10 +950,8 @@ open $(echo http://$GATEWAY_ADDRESS/productpage)
 Clean up the virtual services and routes:
 
 ```bash
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl delete httproute reviews --context $context -n bookinfo
-  kubectl delete virtualservice ratings --context $context -n bookinfo
-done
+kubectl delete httproute reviews --context $CLUSTER2 -n bookinfo-backend
+kubectl delete virtualservice ratings --context $CLUSTER2 -n bookinfo-backend
 ```
 
 # Observability
@@ -971,22 +970,22 @@ Clean up all resources:
 
 ```bash
 # all waypoints
-for context in $CLUSTER1 $CLUSTER2; do
-  kubectl delete gateway waypoint --context $context -n bookinfo
-done
+kubectl delete gateway waypoint --context $CLUSTER1 -n bookinfo-frontend
+kubectl delete gateway waypoint --context $CLUSTER2 -n bookinfo-backend
 kubectl delete gateway waypoint --context $CLUSTER1 -n command-runner
 
 # application routes and gateway
-kubectl delete httproute bookinfo-route --context $CLUSTER1 -n bookinfo
+kubectl delete httproute bookinfo-route --context $CLUSTER1 -n bookinfo-frontend
 kubectl delete httproute command-runner-route --context $CLUSTER1 -n command-runner
 kubectl delete gateway http-gateway --context $CLUSTER1 -n istio-gateways
+kubectl delete ingress alb --context $CLUSTER1 -n istio-gateways
 
 # istio gateways
 kubectl delete gateway istio-remote-peer-cluster1 --context $CLUSTER2 -n istio-gateways
 kubectl delete gateway istio-remote-peer-cluster2 --context $CLUSTER1 -n istio-gateways
+kubectl --context $CLUSTER2 -n bookinfo-backend label ratings productpage solo.io/service-scope-
+kubectl --context $CLUSTER2 -n bookinfo-backend label reviews productpage solo.io/service-scope-
 for context in $CLUSTER1 $CLUSTER2; do
-  kubectl --context $context -n bookinfo label service productpage solo.io/service-scope-
-  kubectl --context $context -n bookinfo annotate service productpage networking.istio.io/traffic-distribution-
   kubectl delete service istio-eastwest --context $context -n istio-gateways
   kubectl delete gateway istio-eastwest --context $context -n istio-gateways
   kubectl delete namespace istio-gateways --context $context
@@ -1021,8 +1020,9 @@ kubectl delete --context $CLUSTER1 -f https://raw.githubusercontent.com/btjimers
 for context in $CLUSTER1 $CLUSTER2; do
   kubectl --context $context delete -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo.yaml
   kubectl --context $context delete -n bookinfo -f https://raw.githubusercontent.com/istio/istio/release-1.24/samples/bookinfo/platform/kube/bookinfo-versions.yaml
-  kubectl --context $context delete namespace bookinfo
 done
+kubectl --context $CLUSTER1 delete namespace bookinfo-frontend
+kubectl --context $CLUSTER2 delete namespace bookinfo-backend
 
 # gatewapi crds
 for context in $CLUSTER1 $CLUSTER2; do
