@@ -195,27 +195,25 @@ glooMgmtServer:
   registerCluster: true
   policyApis:
     enabled: true
-  serviceOverrides:
-    metadata:
-      annotations:
-        service.beta.kubernetes.io/aws-load-balancer-type: external
-        service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-        service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
-        service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
 glooInsightsEngine:
   enabled: true
 glooUi:
+  enabled: true
+jaeger:
   enabled: true
 prometheus:
   enabled: true
 redis:
   deployment:
     enabled: true
+serviceOverrides:
+  metadata:
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+      service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
 telemetryCollector:
-  enabled: true
-  mode: deployment
-  replicaCount: 1
-telemetryGateway:
   enabled: true
   service:
     annotations:
@@ -223,9 +221,19 @@ telemetryGateway:
       service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
       service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
       service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
+telemetryGateway:
+  enabled: true
+telemetryGatewayCustomization:
+  pipelines:
+    traces/jaeger:
+      enabled: true
+telemetryCollectorCustomization:
+  pipelines:
+    traces/istio:
+      enabled: true
 installEnterpriseCrds: false
 featureGates:
-  ConfigDistribution: true
+  ConfigDistribution: false
 EOF
 
 ```
@@ -374,6 +382,7 @@ Create service mesh controllers to install Istio on both clusters
 
 ```bash
 kubectl --context $CLUSTER1 apply -f- <<EOF
+
 apiVersion: operator.gloo.solo.io/v1
 kind: ServiceMeshController
 metadata:
@@ -382,6 +391,32 @@ spec:
   version: $ISTIO_VERSION
   cluster: $CLUSTER1_NAME
   network: $CLUSTER1_NAME
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gloo-extensions-config
+  namespace: gloo-mesh
+data:
+  values.istio-ztunnel: |
+    l7Telemetry:
+      distributedTracing:
+        # Can disable the distributed tracing
+        enabled: true
+        # OTLP endpoint to send spans to
+        otlpEndpoint: "http://gloo-telemetry-collector.gloo-mesh:4317"
+  values.istiod: |
+    env:
+      REQUIRE_3P_TOKEN: false
+    meshConfig:
+      # Enable tracing
+      enableTracing: true
+      # Specify tracing settings
+      defaultConfig:
+        tracing:
+          sampling: 100
+          zipkin:
+            address: gloo-telemetry-collector.gloo-mesh.svc.cluster.local:9411
 EOF
 
 kubectl --context $CLUSTER2 apply -f- <<EOF
@@ -393,6 +428,32 @@ spec:
   version: $ISTIO_VERSION
   cluster: $CLUSTER2_NAME
   network: $CLUSTER2_NAME
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gloo-extensions-config
+  namespace: gloo-mesh
+data:
+  values.istio-ztunnel: |
+    l7Telemetry:
+      distributedTracing:
+        # Can disable the distributed tracing
+        enabled: true
+        # OTLP endpoint to send spans to
+        otlpEndpoint: "http://gloo-telemetry-collector.gloo-mesh:4317"
+  values.istiod: |
+    env:
+      REQUIRE_3P_TOKEN: false
+    meshConfig:
+      # Enable tracing
+      enableTracing: true
+      # Specify tracing settings
+      defaultConfig:
+        tracing:
+          sampling: 100
+          zipkin:
+            address: gloo-telemetry-collector.gloo-mesh.svc.cluster.local:9411
 EOF
 ```
 
@@ -618,7 +679,7 @@ EOF
 Create an ALB ingress object for cluster 1:
 
 ```bash
-kubectl apply -f- <<EOF
+kubectl apply --context $CLUSTER1 -f- <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
